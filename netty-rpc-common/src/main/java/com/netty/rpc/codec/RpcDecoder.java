@@ -16,8 +16,8 @@ import java.util.List;
  */
 public class RpcDecoder extends ByteToMessageDecoder {
     private static final Logger logger = LoggerFactory.getLogger(RpcDecoder.class);
-    private Class<?> genericClass;
-    private Serializer serializer;
+    private final Class<?> genericClass;
+    private final Serializer serializer;
 
     public RpcDecoder(Class<?> genericClass, Serializer serializer) {
         this.genericClass = genericClass;
@@ -25,7 +25,7 @@ public class RpcDecoder extends ByteToMessageDecoder {
     }
 
     @Override
-    public final void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
+    public final void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
         if (in.readableBytes() < 4) {
             return;
         }
@@ -37,12 +37,12 @@ public class RpcDecoder extends ByteToMessageDecoder {
         }
         byte[] data = new byte[dataLength];
         in.readBytes(data);
-        Object obj = null;
+        Object obj;
         try {
             obj = serializer.deserialize(data, genericClass);
             out.add(obj);
         } catch (Exception ex) {
-            logger.error("Decode error: " + ex.toString());
+            logger.error("Decode error: ", ex);
         }
     }
 

@@ -36,7 +36,7 @@ public class JsonUtil {
     }
 
     public static <T> byte[] serialize(T obj) {
-        byte[] bytes = new byte[0];
+        byte[] bytes;
         try {
             bytes = objMapper.writeValueAsBytes(obj);
         } catch (JsonProcessingException e) {
@@ -82,7 +82,8 @@ public class JsonUtil {
     public static <type> type jsonToObjectHashMap(String json,
                                                   Class<?> keyClass, Class<?> valueClass) {
         type obj = null;
-        JavaType javaType = objMapper.getTypeFactory().constructParametricType(HashMap.class, keyClass, valueClass);
+        JavaType javaType = objMapper.getTypeFactory()
+                .constructParametricType(HashMap.class, keyClass, valueClass);
         try {
             obj = objMapper.readValue(json, javaType);
         } catch (IOException e) {

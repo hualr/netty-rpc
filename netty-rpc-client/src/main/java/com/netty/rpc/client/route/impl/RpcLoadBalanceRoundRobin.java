@@ -1,8 +1,8 @@
 package com.netty.rpc.client.route.impl;
 
 import com.netty.rpc.client.handler.RpcClientHandler;
-import com.netty.rpc.client.route.RpcLoadBalance;
-import com.netty.rpc.protocol.RpcProtocol;
+import com.netty.rpc.client.route.api.RpcLoadBalance;
+import com.netty.rpc.protocol.ServerConfigInfo;
 
 import java.util.List;
 import java.util.Map;
@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class RpcLoadBalanceRoundRobin extends RpcLoadBalance {
     private AtomicInteger roundRobin = new AtomicInteger(0);
 
-    public RpcProtocol doRoute(List<RpcProtocol> addressList) {
+    public ServerConfigInfo doRoute(List<ServerConfigInfo> addressList) {
         int size = addressList.size();
         // Round robin
         int index = (roundRobin.getAndAdd(1) + size) % size;
@@ -23,9 +23,9 @@ public class RpcLoadBalanceRoundRobin extends RpcLoadBalance {
     }
 
     @Override
-    public RpcProtocol route(String serviceKey, Map<RpcProtocol, RpcClientHandler> connectedServerNodes) throws Exception {
-        Map<String, List<RpcProtocol>> serviceMap = getServiceMap(connectedServerNodes);
-        List<RpcProtocol> addressList = serviceMap.get(serviceKey);
+    public ServerConfigInfo route(String serviceKey, Map<ServerConfigInfo, RpcClientHandler> connectedServerNodes) throws Exception {
+        Map<String, List<ServerConfigInfo>> serviceMap = getServiceMap(connectedServerNodes);
+        List<ServerConfigInfo> addressList = serviceMap.get(serviceKey);
         if (addressList != null && addressList.size() > 0) {
             return doRoute(addressList);
         } else {

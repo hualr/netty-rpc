@@ -1,12 +1,16 @@
 package com.netty.rpc.codec;
 
 import java.io.Serializable;
+import lombok.Data;
+import lombok.experimental.Accessors;
 
 /**
  * RPC Response
  *
  * @author luxiaoxun
  */
+@Data
+@Accessors(chain = true)
 public class RpcResponse implements Serializable {
     private static final long serialVersionUID = 8215493329459772524L;
 
@@ -18,27 +22,4 @@ public class RpcResponse implements Serializable {
         return error != null;
     }
 
-    public String getRequestId() {
-        return requestId;
-    }
-
-    public void setRequestId(String requestId) {
-        this.requestId = requestId;
-    }
-
-    public String getError() {
-        return error;
-    }
-
-    public void setError(String error) {
-        this.error = error;
-    }
-
-    public Object getResult() {
-        return result;
-    }
-
-    public void setResult(Object result) {
-        this.result = result;
-    }
 }

@@ -14,8 +14,8 @@ import org.slf4j.LoggerFactory;
  */
 public class RpcEncoder extends MessageToByteEncoder {
     private static final Logger logger = LoggerFactory.getLogger(RpcEncoder.class);
-    private Class<?> genericClass;
-    private Serializer serializer;
+    private final Class<?> genericClass;
+    private final Serializer serializer;
 
     public RpcEncoder(Class<?> genericClass, Serializer serializer) {
         this.genericClass = genericClass;
@@ -23,14 +23,14 @@ public class RpcEncoder extends MessageToByteEncoder {
     }
 
     @Override
-    public void encode(ChannelHandlerContext ctx, Object in, ByteBuf out) throws Exception {
+    public void encode(ChannelHandlerContext ctx, Object in, ByteBuf out) {
         if (genericClass.isInstance(in)) {
             try {
                 byte[] data = serializer.serialize(in);
                 out.writeInt(data.length);
                 out.writeBytes(data);
             } catch (Exception ex) {
-                logger.error("Encode error: " + ex.toString());
+                logger.error("Encode error: ", ex);
             }
         }
     }

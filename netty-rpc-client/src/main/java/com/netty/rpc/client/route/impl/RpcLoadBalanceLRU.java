@@ -1,8 +1,8 @@
 package com.netty.rpc.client.route.impl;
 
 import com.netty.rpc.client.handler.RpcClientHandler;
-import com.netty.rpc.client.route.RpcLoadBalance;
-import com.netty.rpc.protocol.RpcProtocol;
+import com.netty.rpc.client.route.api.RpcLoadBalance;
+import com.netty.rpc.protocol.ServerConfigInfo;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,11 +13,11 @@ import java.util.concurrent.ConcurrentMap;
  * Created by luxiaoxun on 2020-08-01.
  */
 public class RpcLoadBalanceLRU extends RpcLoadBalance {
-    private ConcurrentMap<String, LinkedHashMap<RpcProtocol, RpcProtocol>> jobLRUMap =
-            new ConcurrentHashMap<String, LinkedHashMap<RpcProtocol, RpcProtocol>>();
+    private final ConcurrentMap<String, LinkedHashMap<ServerConfigInfo, ServerConfigInfo>> jobLRUMap =
+            new ConcurrentHashMap<>();
     private long CACHE_VALID_TIME = 0;
 
-    public RpcProtocol doRoute(String serviceKey, List<RpcProtocol> addressList) {
+    public ServerConfigInfo doRoute(String serviceKey, List<ServerConfigInfo> addressList) {
         // cache clear
         if (System.currentTimeMillis() > CACHE_VALID_TIME) {
             jobLRUMap.clear();
@@ -25,7 +25,7 @@ public class RpcLoadBalanceLRU extends RpcLoadBalance {
         }
 
         // init lru
-        LinkedHashMap<RpcProtocol, RpcProtocol> lruHashMap = jobLRUMap.get(serviceKey);
+        LinkedHashMap<ServerConfigInfo, ServerConfigInfo> lruHashMap = jobLRUMap.get(serviceKey);
         if (lruHashMap == null) {
             /**
              * LinkedHashMap
@@ -33,9 +33,9 @@ public class RpcLoadBalanceLRU extends RpcLoadBalance {
              * b、removeEldestEntry：新增元素时将会调用，返回true时会删除最老元素；
              *      可封装LinkedHashMap并重写该方法，比如定义最大容量，超出是返回true即可实现固定长度的LRU算法；
              */
-            lruHashMap = new LinkedHashMap<RpcProtocol, RpcProtocol>(16, 0.75f, true) {
+            lruHashMap = new LinkedHashMap<ServerConfigInfo, ServerConfigInfo>(16, 0.75f, true) {
                 @Override
-                protected boolean removeEldestEntry(Map.Entry<RpcProtocol, RpcProtocol> eldest) {
+                protected boolean removeEldestEntry(Map.Entry<ServerConfigInfo, ServerConfigInfo> eldest) {
                     if (super.size() > 1000) {
                         return true;
                     } else {
@@ -47,34 +47,34 @@ public class RpcLoadBalanceLRU extends RpcLoadBalance {
         }
 
         // put new
-        for (RpcProtocol address : addressList) {
+        for (ServerConfigInfo address : addressList) {
             if (!lruHashMap.containsKey(address)) {
                 lruHashMap.put(address, address);
             }
         }
         // remove old
-        List<RpcProtocol> delKeys = new ArrayList<>();
-        for (RpcProtocol existKey : lruHashMap.keySet()) {
+        List<ServerConfigInfo> delKeys = new ArrayList<>();
+        for (ServerConfigInfo existKey : lruHashMap.keySet()) {
             if (!addressList.contains(existKey)) {
                 delKeys.add(existKey);
             }
         }
         if (delKeys.size() > 0) {
-            for (RpcProtocol delKey : delKeys) {
+            for (ServerConfigInfo delKey : delKeys) {
                 lruHashMap.remove(delKey);
             }
         }
 
         // load
-        RpcProtocol eldestKey = lruHashMap.entrySet().iterator().next().getKey();
-        RpcProtocol eldestValue = lruHashMap.get(eldestKey);
+        ServerConfigInfo eldestKey = lruHashMap.entrySet().iterator().next().getKey();
+        ServerConfigInfo eldestValue = lruHashMap.get(eldestKey);
         return eldestValue;
     }
 
     @Override
-    public RpcProtocol route(String serviceKey, Map<RpcProtocol, RpcClientHandler> connectedServerNodes) throws Exception {
-        Map<String, List<RpcProtocol>> serviceMap = getServiceMap(connectedServerNodes);
-        List<RpcProtocol> addressList = serviceMap.get(serviceKey);
+    public ServerConfigInfo route(String serviceKey, Map<ServerConfigInfo, RpcClientHandler> connectedServerNodes) throws Exception {
+        Map<String, List<ServerConfigInfo>> serviceMap = getServiceMap(connectedServerNodes);
+        List<ServerConfigInfo> addressList = serviceMap.get(serviceKey);
         if (addressList != null && addressList.size() > 0) {
             return doRoute(serviceKey, addressList);
         } else {

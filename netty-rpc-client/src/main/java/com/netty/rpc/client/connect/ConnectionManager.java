@@ -2,25 +2,31 @@ package com.netty.rpc.client.connect;
 
 import com.netty.rpc.client.handler.RpcClientHandler;
 import com.netty.rpc.client.handler.RpcClientInitializer;
-import com.netty.rpc.client.route.RpcLoadBalance;
+import com.netty.rpc.client.route.api.RpcLoadBalance;
 import com.netty.rpc.client.route.impl.RpcLoadBalanceRoundRobin;
-import com.netty.rpc.protocol.RpcProtocol;
 import com.netty.rpc.protocol.RpcServiceInfo;
+import com.netty.rpc.protocol.ServerConfigInfo;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import java.net.InetSocketAddress;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.net.InetSocketAddress;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * RPC Connection Manager
@@ -29,117 +35,110 @@ import java.util.concurrent.locks.ReentrantLock;
 public class ConnectionManager {
     private static final Logger logger = LoggerFactory.getLogger(ConnectionManager.class);
 
-    private EventLoopGroup eventLoopGroup = new NioEventLoopGroup(4);
+    private final EventLoopGroup eventLoopGroup = new NioEventLoopGroup(4);
     private static ThreadPoolExecutor threadPoolExecutor = new ThreadPoolExecutor(4, 8,
-            600L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(1000));
+            600L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(1000));
 
-    private Map<RpcProtocol, RpcClientHandler> connectedServerNodes = new ConcurrentHashMap<>();
-    private CopyOnWriteArraySet<RpcProtocol> rpcProtocolSet = new CopyOnWriteArraySet<>();
-    private ReentrantLock lock = new ReentrantLock();
-    private Condition connected = lock.newCondition();
+    private final Map<ServerConfigInfo, RpcClientHandler> connectedServerNodes = new ConcurrentHashMap<>();
+    private final Set<ServerConfigInfo> serverConfigInfoSet = new CopyOnWriteArraySet<>();
+    private final ReentrantLock lock = new ReentrantLock();
+
+    private final Condition connected = lock.newCondition();
     private long waitTimeout = 5000;
-    private RpcLoadBalance loadBalance = new RpcLoadBalanceRoundRobin();
+    private final RpcLoadBalance loadBalance = new RpcLoadBalanceRoundRobin();
     private volatile boolean isRunning = true;
 
     private ConnectionManager() {
     }
 
     private static class SingletonHolder {
-        private static final ConnectionManager instance = new ConnectionManager();
+        private static final ConnectionManager INSTANCE = new ConnectionManager();
     }
 
     public static ConnectionManager getInstance() {
-        return SingletonHolder.instance;
+        return SingletonHolder.INSTANCE;
     }
 
-    public void updateConnectedServer(List<RpcProtocol> serviceList) {
+    public void updateConnectedServer(List<ServerConfigInfo> serviceList) {
         // Now using 2 collections to manage the service info and TCP connections because making the connection is async
         // Once service info is updated on ZK, will trigger this function
         // Actually client should only care about the service it is using
-        if (serviceList != null && serviceList.size() > 0) {
-            // Update local server nodes cache
-            HashSet<RpcProtocol> serviceSet = new HashSet<>(serviceList.size());
-            for (int i = 0; i < serviceList.size(); ++i) {
-                RpcProtocol rpcProtocol = serviceList.get(i);
-                serviceSet.add(rpcProtocol);
-            }
 
-            // Add new server info
-            for (final RpcProtocol rpcProtocol : serviceSet) {
-                if (!rpcProtocolSet.contains(rpcProtocol)) {
-                    connectServerNode(rpcProtocol);
-                }
-            }
-
-            // Close and remove invalid server nodes
-            for (RpcProtocol rpcProtocol : rpcProtocolSet) {
-                if (!serviceSet.contains(rpcProtocol)) {
-                    logger.info("Remove invalid service: " + rpcProtocol.toJson());
-                    removeAndCloseHandler(rpcProtocol);
-                }
-            }
-        } else {
+        if (serviceList == null || serviceList.isEmpty()) {
             // No available service
             logger.error("No available service!");
-            for (RpcProtocol rpcProtocol : rpcProtocolSet) {
-                removeAndCloseHandler(rpcProtocol);
+            serverConfigInfoSet.forEach(this::removeAndCloseHandler);
+        }
+        // Update local server nodes cache
+        Set<ServerConfigInfo> serviceSet = new HashSet<>(serviceList);
+        // Add new server info
+        for (final ServerConfigInfo serverConfigInfo : serviceSet) {
+            if (!serverConfigInfoSet.contains(serverConfigInfo)) {
+                connectServerNode(serverConfigInfo);
+            }
+        }
+
+        // Close and remove invalid server nodes
+        for (ServerConfigInfo serverConfigInfo : serverConfigInfoSet) {
+            if (!serviceSet.contains(serverConfigInfo)) {
+                logger.info("Remove invalid service::[{}] ", serverConfigInfo.toJson());
+                removeAndCloseHandler(serverConfigInfo);
             }
         }
     }
 
 
-    public void updateConnectedServer(RpcProtocol rpcProtocol, PathChildrenCacheEvent.Type type) {
-        if (rpcProtocol == null) {
+    public void updateConnectedServer(ServerConfigInfo serverConfigInfo, PathChildrenCacheEvent.Type type) {
+        if (serverConfigInfo == null) {
             return;
         }
-        if (type == PathChildrenCacheEvent.Type.CHILD_ADDED && !rpcProtocolSet.contains(rpcProtocol)) {
-            connectServerNode(rpcProtocol);
+        if (type == PathChildrenCacheEvent.Type.CHILD_ADDED && !serverConfigInfoSet.contains(serverConfigInfo)) {
+            connectServerNode(serverConfigInfo);
         } else if (type == PathChildrenCacheEvent.Type.CHILD_UPDATED) {
             //TODO We may don't need to reconnect remote server if the server'IP and server'port are not changed
-            removeAndCloseHandler(rpcProtocol);
-            connectServerNode(rpcProtocol);
+            removeAndCloseHandler(serverConfigInfo);
+            connectServerNode(serverConfigInfo);
         } else if (type == PathChildrenCacheEvent.Type.CHILD_REMOVED) {
-            removeAndCloseHandler(rpcProtocol);
+            removeAndCloseHandler(serverConfigInfo);
         } else {
             throw new IllegalArgumentException("Unknow type:" + type);
         }
     }
 
-    private void connectServerNode(RpcProtocol rpcProtocol) {
-        if (rpcProtocol.getServiceInfoList() == null || rpcProtocol.getServiceInfoList().isEmpty()) {
-            logger.info("No service on node, host: {}, port: {}", rpcProtocol.getHost(), rpcProtocol.getPort());
+    private void connectServerNode(ServerConfigInfo serverConfigInfo) {
+        if (serverConfigInfo.getServiceInfoList() == null || serverConfigInfo.getServiceInfoList().isEmpty()) {
+            logger.info("No service on node, host: {}, port: {}", serverConfigInfo.getHost(),
+                    serverConfigInfo.getPort());
             return;
         }
-        rpcProtocolSet.add(rpcProtocol);
-        logger.info("New service node, host: {}, port: {}", rpcProtocol.getHost(), rpcProtocol.getPort());
-        for (RpcServiceInfo serviceProtocol : rpcProtocol.getServiceInfoList()) {
-            logger.info("New service info, name: {}, version: {}", serviceProtocol.getServiceName(), serviceProtocol.getVersion());
+        serverConfigInfoSet.add(serverConfigInfo);
+        logger.info("New service node, host: {}, port: {}", serverConfigInfo.getHost(), serverConfigInfo.getPort());
+        for (RpcServiceInfo serviceProtocol : serverConfigInfo.getServiceInfoList()) {
+            logger.info("New service info, name: {}, version: {}", serviceProtocol.getServiceName(),
+                    serviceProtocol.getVersion());
         }
-        final InetSocketAddress remotePeer = new InetSocketAddress(rpcProtocol.getHost(), rpcProtocol.getPort());
-        threadPoolExecutor.submit(new Runnable() {
-            @Override
-            public void run() {
-                Bootstrap b = new Bootstrap();
-                b.group(eventLoopGroup)
-                        .channel(NioSocketChannel.class)
-                        .handler(new RpcClientInitializer());
+        final InetSocketAddress remotePeer = new InetSocketAddress(serverConfigInfo.getHost(),
+                serverConfigInfo.getPort());
+        threadPoolExecutor.submit(() -> {
+            Bootstrap b = new Bootstrap();
+            b.group(eventLoopGroup)
+                    .channel(NioSocketChannel.class)
+                    .handler(new RpcClientInitializer());
 
-                ChannelFuture channelFuture = b.connect(remotePeer);
-                channelFuture.addListener(new ChannelFutureListener() {
-                    @Override
-                    public void operationComplete(final ChannelFuture channelFuture) throws Exception {
-                        if (channelFuture.isSuccess()) {
-                            logger.info("Successfully connect to remote server, remote peer = " + remotePeer);
-                            RpcClientHandler handler = channelFuture.channel().pipeline().get(RpcClientHandler.class);
-                            connectedServerNodes.put(rpcProtocol, handler);
-                            handler.setRpcProtocol(rpcProtocol);
-                            signalAvailableHandler();
-                        } else {
-                            logger.error("Can not connect to remote server, remote peer = " + remotePeer);
-                        }
+            ChannelFuture channelFuture = b.connect(remotePeer);
+            channelFuture.addListener(
+                (ChannelFutureListener) channelFuture1 -> {
+                    if (!channelFuture1.isSuccess()) {
+                        logger.error("Can not connect to remote server, remote peer = [{}]", remotePeer);
+                        return;
+
                     }
+                    logger.info("Successfully connect to remote server, remote peer = [{}]", remotePeer);
+                    RpcClientHandler handler = channelFuture1.channel().pipeline().get(RpcClientHandler.class);
+                    connectedServerNodes.put(serverConfigInfo, handler);
+                    handler.setRpcProtocol(serverConfigInfo);
+                    signalAvailableHandler();
                 });
-            }
         });
     }
 
@@ -172,8 +171,8 @@ public class ConnectionManager {
                 logger.error("Waiting for available service is interrupted!", e);
             }
         }
-        RpcProtocol rpcProtocol = loadBalance.route(serviceKey, connectedServerNodes);
-        RpcClientHandler handler = connectedServerNodes.get(rpcProtocol);
+        ServerConfigInfo serverConfigInfo = loadBalance.route(serviceKey, connectedServerNodes);
+        RpcClientHandler handler = connectedServerNodes.get(serverConfigInfo);
         if (handler != null) {
             return handler;
         } else {
@@ -181,25 +180,26 @@ public class ConnectionManager {
         }
     }
 
-    private void removeAndCloseHandler(RpcProtocol rpcProtocol) {
-        RpcClientHandler handler = connectedServerNodes.get(rpcProtocol);
+    private void removeAndCloseHandler(ServerConfigInfo serverConfigInfo) {
+        RpcClientHandler handler = connectedServerNodes.get(serverConfigInfo);
         if (handler != null) {
             handler.close();
         }
-        connectedServerNodes.remove(rpcProtocol);
-        rpcProtocolSet.remove(rpcProtocol);
+        connectedServerNodes.remove(serverConfigInfo);
+        serverConfigInfoSet.remove(serverConfigInfo);
     }
 
-    public void removeHandler(RpcProtocol rpcProtocol) {
-        rpcProtocolSet.remove(rpcProtocol);
-        connectedServerNodes.remove(rpcProtocol);
-        logger.info("Remove one connection, host: {}, port: {}", rpcProtocol.getHost(), rpcProtocol.getPort());
+    public void removeHandler(ServerConfigInfo serverConfigInfo) {
+        serverConfigInfoSet.remove(serverConfigInfo);
+        connectedServerNodes.remove(serverConfigInfo);
+        logger.info("Remove one connection, host: {}, port: {}", serverConfigInfo.getHost(),
+                serverConfigInfo.getPort());
     }
 
     public void stop() {
         isRunning = false;
-        for (RpcProtocol rpcProtocol : rpcProtocolSet) {
-            removeAndCloseHandler(rpcProtocol);
+        for (ServerConfigInfo serverConfigInfo : serverConfigInfoSet) {
+            removeAndCloseHandler(serverConfigInfo);
         }
         signalAvailableHandler();
         threadPoolExecutor.shutdown();

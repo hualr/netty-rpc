@@ -4,17 +4,16 @@ import com.netty.rpc.codec.Beat;
 import com.netty.rpc.codec.RpcRequest;
 import com.netty.rpc.codec.RpcResponse;
 import com.netty.rpc.util.ServiceUtil;
-import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.timeout.IdleStateEvent;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.ThreadPoolExecutor;
 import net.sf.cglib.reflect.FastClass;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.Map;
-import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * RPC Handler（RPC request processor）
@@ -28,7 +27,8 @@ public class RpcServerHandler extends SimpleChannelInboundHandler<RpcRequest> {
     private final Map<String, Object> handlerMap;
     private final ThreadPoolExecutor serverHandlerPool;
 
-    public RpcServerHandler(Map<String, Object> handlerMap, final ThreadPoolExecutor threadPoolExecutor) {
+    public RpcServerHandler(final Map<String, Object> handlerMap,
+                            final ThreadPoolExecutor threadPoolExecutor) {
         this.handlerMap = handlerMap;
         this.serverHandlerPool = threadPoolExecutor;
     }
@@ -41,26 +41,20 @@ public class RpcServerHandler extends SimpleChannelInboundHandler<RpcRequest> {
             return;
         }
 
-        serverHandlerPool.execute(new Runnable() {
-            @Override
-            public void run() {
-                logger.info("Receive request " + request.getRequestId());
-                RpcResponse response = new RpcResponse();
-                response.setRequestId(request.getRequestId());
-                try {
-                    Object result = handle(request);
-                    response.setResult(result);
-                } catch (Throwable t) {
-                    response.setError(t.toString());
-                    logger.error("RPC Server handle request error", t);
-                }
-                ctx.writeAndFlush(response).addListener(new ChannelFutureListener() {
-                    @Override
-                    public void operationComplete(ChannelFuture channelFuture) throws Exception {
-                        logger.info("Send response for request " + request.getRequestId());
-                    }
-                });
+        serverHandlerPool.execute(() -> {
+            logger.info("Receive request :[{}]", request.getRequestId());
+            RpcResponse response = new RpcResponse()
+                    .setRequestId(request.getRequestId());
+            try {
+                Object result = handle(request);
+                response.setResult(result);
+            } catch (Throwable t) {
+                response.setError(t.toString());
+                logger.error("RPC Server handle request error", t);
             }
+            ctx.writeAndFlush(response).addListener(
+                    (ChannelFutureListener) channelFuture ->
+                            logger.info("Send response for request:[{}] ", request.getRequestId()));
         });
     }
 
@@ -73,21 +67,15 @@ public class RpcServerHandler extends SimpleChannelInboundHandler<RpcRequest> {
             logger.error("Can not find service implement with interface name: {} and version: {}", className, version);
             return null;
         }
-
         Class<?> serviceClass = serviceBean.getClass();
-        String methodName = request.getMethodName();
         Class<?>[] parameterTypes = request.getParameterTypes();
         Object[] parameters = request.getParameters();
 
         logger.debug(serviceClass.getName());
-        logger.debug(methodName);
-        for (int i = 0; i < parameterTypes.length; ++i) {
-            logger.debug(parameterTypes[i].getName());
+        if (logger.isDebugEnabled()) {
+            Arrays.stream(parameterTypes).forEach(parameterType -> logger.debug(parameterType.getName()));
+            Arrays.stream(parameters).forEach(parameter -> logger.debug(parameter.toString()));
         }
-        for (int i = 0; i < parameters.length; ++i) {
-            logger.debug(parameters[i].toString());
-        }
-
         // JDK reflect
 //        Method method = serviceClass.getMethod(methodName, parameterTypes);
 //        method.setAccessible(true);
@@ -98,13 +86,13 @@ public class RpcServerHandler extends SimpleChannelInboundHandler<RpcRequest> {
 //        FastMethod serviceFastMethod = serviceFastClass.getMethod(methodName, parameterTypes);
 //        return serviceFastMethod.invoke(serviceBean, parameters);
         // for higher-performance
-        int methodIndex = serviceFastClass.getIndex(methodName, parameterTypes);
+        int methodIndex = serviceFastClass.getIndex(request.getMethodName(), parameterTypes);
         return serviceFastClass.invoke(methodIndex, serviceBean, parameters);
     }
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        logger.warn("Server caught exception: " + cause.getMessage());
+        logger.warn("Server caught exception: ", cause);
         ctx.close();
     }
 
